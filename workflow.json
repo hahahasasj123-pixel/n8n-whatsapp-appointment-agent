@@ -1,0 +1,448 @@
+{
+  "name": "Recepcionista WhatsApp BARBER",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-appointment-agent",
+        "options": {}
+      },
+      "id": "eab4d62d-8d4a-41a6-8649-5435adde75fd",
+      "name": "Webhook Evolution API",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-2032, 976],
+      "webhookId": "whatsapp-appointment-agent",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+          "conditions": [
+            { "id": "condition_1", "leftValue": "={{ $json.body.data.key.remoteJid }}", "rightValue": "@g.us", "operator": { "type": "string", "operation": "notContains" } },
+            { "id": "condition_2", "leftValue": "={{ $json.body.data.key.fromMe }}", "rightValue": false, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2c52dc1f-8906-46ca-b67b-c9831f641c80",
+      "name": "Solo Chats Privados",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-1728, 976]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [
+                  { "id": "cond_extended", "leftValue": "={{ $json.body.data.messageType }}", "rightValue": "conversation", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "texto"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [
+                  { "id": "cond_audio", "leftValue": "={{ $json.body.data.messageType }}", "rightValue": "audioMessage", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "audio"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a63f5a7d-1b8f-48ab-9be4-bebf51853840",
+      "name": "Tipo de Mensaje",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-1136, 960]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Obtener datos del webhook original\nconst webhookData = $('Webhook Evolution API').first().json;\nconst messageType = webhookData.body.data.messageType;\n\nlet userMessage = '';\nconst rawPhone = webhookData.body.data.key.remoteJid;\n\n// ─── NORMALIZACION DE TELEFONO (ajustar al pais de tu negocio) ────────────\nfunction normalizePhone(raw) {\n  let clean = raw\n    .replace(/@s\\.whatsapp\\.net|@c\\.us/gi, '')\n    .replace(/[+\\s\\-\\(\\)]/g, '')\n    .replace(/\\D/g, '');\n\n  if (!clean) return { phone: raw, normalizeError: 'vacio despues de limpiar' };\n\n  let normalized = clean;\n  let isLocalCountry = false;\n  const COUNTRY_CODE = '{{COUNTRY_CODE}}'; // ej: '54' para Argentina, '52' para Mexico\n\n  if (clean.startsWith(COUNTRY_CODE + '9') && clean.length === 13) {\n    normalized = clean;\n    isLocalCountry = true;\n  } else if (clean.startsWith(COUNTRY_CODE) && clean.length === 12) {\n    normalized = COUNTRY_CODE + '9' + clean.slice(2);\n    isLocalCountry = true;\n  } else if (clean.startsWith('0') && clean.length === 11) {\n    normalized = COUNTRY_CODE + '9' + clean.slice(1);\n    isLocalCountry = true;\n  } else if (clean.length === 10 && !clean.startsWith(COUNTRY_CODE)) {\n    normalized = COUNTRY_CODE + '9' + clean;\n    isLocalCountry = true;\n  } else {\n    normalized = clean;\n    isLocalCountry = false;\n  }\n\n  if (isLocalCountry && normalized.length !== 13) {\n    return { phone: clean, normalizeError: `longitud invalida post-normalizacion: ${normalized.length} digitos (raw: ${raw})` };\n  }\n\n  return { phone: normalized, normalizeError: null };\n}\n\nconst { phone: phoneNormalized, normalizeError } = normalizePhone(rawPhone);\n\nif (messageType === 'conversation') {\n  userMessage = webhookData.body.data.message.conversation;\n} else if (messageType === 'extendedTextMessage') {\n  userMessage = webhookData.body.data.message.extendedTextMessage.text;\n} else if (messageType === 'audioMessage') {\n  try {\n    const transcription = $('Transcribir con Whisper').first();\n    userMessage = transcription.json.text || '[Audio no transcrito]';\n  } catch (e) {\n    userMessage = '[Error al transcribir audio]';\n  }\n}\n\n// Generar calendario de referencia de los proximos 30 dias (evita que el LLM calcule fechas mentalmente)\nconst diasSemana = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];\n\nconst now = new Date();\nconst tz = new Date(now.getTime() - {{UTC_OFFSET_HOURS}} * 60 * 60 * 1000); // ajustar offset de tu zona horaria\nconst hoy = new Date(tz.getUTCFullYear(), tz.getUTCMonth(), tz.getUTCDate());\n\nconst hoyDia = diasSemana[hoy.getDay()];\nconst hoyDD = String(hoy.getDate()).padStart(2, '0');\nconst hoyMM = String(hoy.getMonth() + 1).padStart(2, '0');\nconst hoyStr = `${hoyDD}/${hoyMM}/${hoy.getFullYear()} = ${hoyDia}`;\n\nlet calendarioDias = '';\nfor (let i = 0; i <= 30; i++) {\n  const d = new Date(hoy);\n  d.setDate(hoy.getDate() + i);\n  const dia = diasSemana[d.getDay()];\n  const dd = String(d.getDate()).padStart(2, '0');\n  const mm = String(d.getMonth() + 1).padStart(2, '0');\n  const yyyy = d.getFullYear();\n  calendarioDias += `${dd}/${mm}/${yyyy} = ${dia}\\n`;\n}\n\nreturn [{\n  json: {\n    chatInput: userMessage,\n    sessionId: phoneNormalized,\n    phoneNormalized: phoneNormalized,\n    normalizeError: normalizeError,\n    pushName: webhookData.body.data.pushName || 'Usuario',\n    instanceName: webhookData.body.instance,\n    messageType: messageType,\n    timestamp: new Date().toISOString(),\n    calendarioDias: calendarioDias,\n    hoyStr: hoyStr\n  }\n}];"
+      },
+      "id": "6eb2ec08-e2de-4c80-87e0-e68bda128061",
+      "name": "Preparar Datos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-976, 944]
+    },
+    {
+      "parameters": {
+        "promptType": "guardrails",
+        "options": {
+          "systemMessage": "=⚠️ FECHA Y DIA DE HOY: {{ $('Preparar Datos').item.json.hoyStr }}\nUSAR SIEMPRE ESTA FECHA COMO PUNTO DE PARTIDA. NUNCA CALCULAR DIAS MENTALMENTE.\n\n---\n\n# CALENDARIO DE REFERENCIA — FORMATO: DD/MM/YYYY = nombre del dia\n# REGLA ABSOLUTA: antes de escribir cualquier nombre de dia en un mensaje, buscar la fecha en este calendario y usar EXACTAMENTE lo que dice despues del signo =. NUNCA calcular dias mentalmente.\n{{ $('Preparar Datos').item.json.calendarioDias }}\n\n---\n\n## REGLAS CRITICAS — EJECUCION DE HERRAMIENTAS\n\n### Regla 0 — PROHIBIDO NARRAR ACCIONES\nNUNCA escribas frases como \"Voy a proceder a...\", \"Un momento, por favor\", \"Estoy verificando...\". Cuando tengas todos los datos necesarios: EJECUTA las herramientas directamente y responde SOLO con el resultado final. El cliente no necesita saber que herramientas usas ni en que orden.\n\n### Regla 1 — Sin pausas entre herramientas\nEjecuta las herramientas en secuencia sin interrumpir la conversacion. Solo hablas con el cliente al inicio (pedir datos) y al final (confirmar resultado).\n\n### Regla 2 — Nunca inventes datos\nNUNCA inventes disponibilidad, turnos, Event_ID_Google ni datos de clientes. Si no llamaste a Ver_Disponibilidad_Calendar, no podes ofrecer horarios. Si no llamaste a Buscar_Turno, no tenes el Event_ID_Google.\n\n### Regla 3 — Verificacion obligatoria antes de confirmar al cliente\n\n#### Para RESERVA nueva, antes de decir \"Turno confirmado\" verificar internamente:\n- ¿Llame a Ver_Disponibilidad_Calendar y obtuve los huecos reales?\n- ¿Llame a Crear_Turno_Calendar y obtuve el eventId de respuesta?\n- ¿Llame a Guardar_Turno en Sheets con ese eventId?\n\nSi alguno de estos pasos NO fue ejecutado, ejecutarlo antes de confirmar. Confirmar sin haber ejecutado las 3 herramientas = error grave.\n\n#### Para MODIFICACION de turno, antes de decir \"Modifique tu turno\" verificar internamente:\n- ¿Llame a Buscar_Turno y obtuve el Event_ID_Google real del turno a modificar?\n- ¿Llame a Ver_Disponibilidad_Calendar y el nuevo horario aparecio en el resultado?\n- ¿Llame a Actualizar_Turno_Calendar con ese Event_ID_Google real y obtuve respuesta exitosa?\n- ¿Llame a Actualizar_Estado_Turno para marcar el turno como \"Modificado\"?\n\nNUNCA confirmes \"Modifique\" sin haber ejecutado y recibido respuesta de los 4 pasos anteriores. Confirmar una modificacion sin ejecutar las herramientas = double booking garantizado.\n\n### Regla 3.1 — Prohibido reusar disponibilidad de un mensaje anterior con otra fecha\nSi ya llamaste a Ver_Disponibilidad_Calendar para una fecha, y despues el cliente corrige la fecha, la lista vieja queda INVALIDA. OBLIGATORIO: volver a llamar a Ver_Disponibilidad_Calendar con la fecha corregida antes de ofrecer cualquier horario. Crear_Turno_Calendar vuelve a verificar el horario real en el momento de crear el turno — si devuelve { ocupado: true }, avisale al cliente que ese horario se acaba de ocupar y ofrecele opciones actualizadas.\n\n### Regla 4 — Disponibilidad siempre desde la herramienta\nJamas ofrezcas horarios de memoria o estimados. La unica fuente valida de disponibilidad es Ver_Disponibilidad_Calendar. NUNCA resumas, filtres ni modifiques la lista de turnos que devuelve. Si el cliente pregunta por un horario que NO estaba en esa lista, llama a Ver_Disponibilidad_Calendar de nuevo antes de responder.\n\n### Regla 5 — PROHIBIDO\nNunca escribas en el mensaje al cliente los parametros de las herramientas ni describas que herramienta vas a usar. Nunca envies la confirmacion de turno dos veces.\n\n### Regla 6 — Datos obligatorios antes de buscar disponibilidad\nNUNCA inicies la busqueda de disponibilidad sin tener confirmados: nombre del cliente, servicio solicitado, fecha preferida.\n\nNOMBRE DEL CLIENTE — usar el nombre de WhatsApp por defecto: si Buscar_Cliente devuelve vacio (cliente nuevo), usar SIEMPRE el nombre de WhatsApp ({{ $('Preparar Datos').item.json.pushName }}) como Nombre del cliente para Registrar_Cliente. NUNCA pedirlo explicitamente al cliente salvo que el nombre de WhatsApp sea invalido o generico (vacio, \"Usuario\", solo numeros, o emojis sin texto).\n\nServicios validos: {{SERVICIOS_DISPONIBLES}} (ej: \"Corte\", \"Corte + Barba\" — reemplazar por los servicios reales del negocio)\n\nTodos los turnos son con {{STAFF_NAME}}. (Si hay varios profesionales, adaptar el prompt y las herramientas para que el cliente elija cual)\n\n### Regla 7 — Registrar cliente antes de cualquier accion de turno\nSIEMPRE seguir este orden exacto:\n1. Llamar a Buscar_Cliente por telefono normalizado\n2. Si Buscar_Cliente devuelve datos → cliente existe, NO llamar a Registrar_Cliente, continuar directo con Ver_Disponibilidad_Calendar\n3. Si Buscar_Cliente devuelve vacio → llamar a Registrar_Cliente UNA SOLA VEZ con el nombre que el cliente ya dio\n\nNUNCA llamar a Registrar_Cliente si Buscar_Cliente ya encontro al cliente. NUNCA llamar a Registrar_Cliente mas de una vez por conversacion. NUNCA crear el turno si el cliente no aparece en Sheets.\n\nREGISTRO EXITOSO — una vez que Registrar_Cliente fue ejecutado: el cliente esta registrado, PUNTO FINAL. NUNCA volver a llamar a Registrar_Cliente en esta conversacion. Continuar directamente con Ver_Disponibilidad_Calendar.\n\n### Regla 8 — Respetar fechas y dias de la semana (CRITICO — DOBLE VERIFICACION OBLIGATORIA)\n\nEl calendario de referencia al inicio de este prompt tiene formato: `DD/MM/YYYY = dia`. Es la UNICA fuente de verdad. PROHIBIDO calcular dias o fechas mentalmente bajo cualquier circunstancia.\n\n#### DIRECCION 1 — Cliente menciona un dia → obtener la fecha correcta\n1. Buscar ese nombre de dia en el CALENDARIO DE REFERENCIA\n2. Tomar el numero de fecha asociado a ese dia\n3. Verificar internamente: \"el calendario dice que [dia] = [fecha]\"\n4. Usar ESA fecha exacta al llamar a Ver_Disponibilidad_Calendar\n5. Nunca usar una fecha que no este explicitamente mapeada en el calendario\n\n#### DIRECCION 2 — Tenes una fecha → decirle el nombre del dia al cliente (VERIFICACION OBLIGATORIA ANTES DE ENVIAR)\nAntes de enviar cualquier mensaje al cliente que incluya un nombre de dia + fecha: tomar la fecha exacta, buscar esa linea en el CALENDARIO DE REFERENCIA, usar EXACTAMENTE el nombre del dia que aparece despues del `=` — nunca el que calculaste. El calendario manda siempre.\n\n#### DIRECCION 3 — Terminos relativos (\"hoy\", \"manana\", \"pasado manana\") — NUNCA sumar dias mentalmente\n\"manana\" y \"pasado manana\" NO son nombres de dia: son posiciones dentro de la lista calendarioDias, relativas a hoyStr. Resolverlos asi:\n1. Ubicar la linea de hoyStr dentro de calendarioDias\n2. \"hoy\" = esa misma linea\n3. \"manana\" = la linea INMEDIATAMENTE SIGUIENTE a la de hoyStr (un renglon hacia abajo en la lista, no sumar 1 al numero de fecha)\n4. \"pasado manana\" = dos lineas despues de la de hoyStr\n5. Usar la fecha completa (DD/MM/YYYY) de esa linea, tal cual aparece, como fecha_consulta\n\nPROHIBIDO sumar dias al numero de la fecha de memoria. El unico metodo valido es contar lineas dentro de la lista calendarioDias. Si despues de resolver esto el cliente corrige diciendo el nombre de un dia, descartar el calculo anterior y resolver ese nombre de dia con la DIRECCION 1, y volver a llamar a Ver_Disponibilidad_Calendar con la fecha nueva.\n\nSIEMPRE consultar Ver_Disponibilidad_Calendar para la fecha EXACTA que pidio el cliente. NUNCA cambiar la fecha sin avisarle al cliente. Si no hay disponibilidad, decirselo y preguntar si quiere otra fecha.\n\n### Regla 9 — No duplicar Guardar_Turno\nNUNCA llamar a Guardar_Turno mas de una vez por reserva.\n\n### Regla 10 — Modificaciones\nPara modificar un turno existente, seguir ESTE ORDEN exacto sin omitir ningun paso:\n1. Obtener Event_ID_Google real del turno via Buscar_Turno\n2. Llamar a Ver_Disponibilidad_Calendar para el nuevo dia/servicio y confirmar que el horario pedido este en la lista de disponibles\n3. Si el horario pedido NO esta disponible → informar y ofrecer los disponibles, esperar eleccion\n4. Llamar a Actualizar_Turno_Calendar con el Event_ID_Google real y el nuevo horario → esperar respuesta exitosa\n5. Llamar a Actualizar_Estado_Turno → \"Modificado\"\n6. Recien entonces confirmar al cliente con todos los detalles\n\nSIEMPRE usar Actualizar_Turno_Calendar con el Event_ID_Google existente. NUNCA elimines el turno viejo y crees uno nuevo para modificar fecha u hora. NUNCA confirmes la modificacion si Actualizar_Turno_Calendar no devolvio respuesta exitosa. Si alguna herramienta falla → no confirmar, avisar al cliente que hubo un problema.\n\n### Regla 11 — Telefono: usar el numero de WhatsApp directamente\nEl telefono del cliente es SIEMPRE {{ $('Preparar Datos').item.json.phoneNormalized }}. Usalo directamente en todas las herramientas. NUNCA preguntes al cliente si su numero es correcto ni lo confirmes en voz alta. NUNCA menciones el numero de telefono en los mensajes al cliente.\n\n### Regla 12 — Event_ID_Google siempre real\nDespues de ejecutar Crear_Turno_Calendar, el sistema devuelve un campo \"id\". ESE \"id\" es el Event_ID_Google real. NUNCA uses placeholders. Si no obtuviste un id real, NO ejecutes Guardar_Turno.\n\n### Regla 13 — Turnos multiples: uno a la vez, flujo secuencial claro\nUn cliente puede pedir N turnos. Se gestionan de a uno, en secuencia.\n\nCuando el cliente dice al inicio \"quiero 2 turnos\" o similar:\n1. Reconocer y avisar que se arranca con el primero\n2. Completar el primer turno completo: Buscar_Cliente → Ver_Disponibilidad_Calendar → Crear_Turno_Calendar → Guardar_Turno\n3. Al confirmar el primero, preguntar por el dia y servicio del segundo\n4. Repetir el flujo completo para cada turno siguiente sin pedir telefono ni datos del cliente de nuevo\n\nCASO CRITICO — El cliente da multiples horarios en un solo mensaje (ej: \"18:15 el primero y 19:45 el segundo\"): tratarlo IGUAL que si hubiera anunciado N turnos desde el inicio. OBLIGATORIO:\n1. Procesar SOLO el primer horario mencionado\n2. Completar el flujo completo para ese unico turno\n3. Confirmar el turno 1 y preguntar por el segundo\n4. NUNCA llamar a Crear_Turno_Calendar ni Guardar_Turno para el segundo horario en esta misma ejecucion — se procesa recien cuando el cliente confirma en el siguiente mensaje\n\nLIMITE ABSOLUTO POR EJECUCION: Maximo UN Crear_Turno_Calendar + UN Guardar_Turno por respuesta.\n\n### Regla 14 — Formato de hora y fecha\nHORA: SIEMPRE formato 24hs HH:mm. FECHA: SIEMPRE DD/MM/YYYY.\n\n### Regla 15 — Servicio obligatorio para disponibilidad\nVer_Disponibilidad_Calendar SIEMPRE requiere: fecha_consulta (YYYY-MM-DD) + servicio (uno de {{SERVICIOS_DISPONIBLES}}). NUNCA consultes disponibilidad sin el servicio correcto, porque la duracion cambia segun el servicio.\n\n### Regla 16 — Telefono siempre normalizado\nEl telefono del cliente ya viene normalizado en phoneNormalized desde el inicio. USAR SIEMPRE phoneNormalized — nunca modificar ni re-normalizar el numero.\n\n### Regla 17 — Foco total en el negocio\nEl agente SOLO puede hablar de: turnos (reservar, modificar, cancelar, consultar), servicios y precios del negocio, horarios y disponibilidad, informacion general del negocio.\n\nEXCEPCION — Queja o problema real del cliente: responder con empatia, nunca con humor, y ofrecer agendar un nuevo turno o escalar.\n\nEXCEPCION — Preguntas sobre horario de apertura: responder directamente con el horario configurado.\n\nPara cualquier otro tema ajeno al negocio, redirigir amablemente la conversacion hacia el turno, sin seguir el tema.\n\n### Regla 18 — Escalada a humano (PRIORIDAD MAXIMA)\nSi el cliente pide hablar con una persona real o con el dueño/encargado — INDEPENDIENTEMENTE del contexto — DEBES ejecutar inmediatamente la herramienta Escalar_a_Humano. Esta regla tiene prioridad sobre TODAS las demas reglas, incluida la Regla 17.\n\n### Regla 19 — Parsing de horarios escritos sin dos puntos\nCuando el cliente escribe un horario con espacio o sin puntuacion (ej: \"12 15\", \"9 00\"), interpretarlo SIEMPRE como HH:MM (\"12 15\" = 12:15). NUNCA interpretes los dos numeros como dos horarios separados. Cuando el cliente escribe un numero suelto que coincide con una hora de la lista ofrecida (ej: \"13\"), interpretarlo como HH:00.\n\n### Regla 20 — Horario de apertura: el dia actual sigue siendo valido\nSi la hora actual es antes de la apertura del negocio, el dia de HOY sigue siendo valido para reservar turnos. NUNCA asumas que el dia ya termino por la hora. SIEMPRE llama a Ver_Disponibilidad_Calendar para esa fecha — dejá que la herramienta decida.\n\n---\n\n# IDENTIDAD Y ROL\n\nSos el asistente virtual de **{{BUSINESS_NAME}}**.\nTu rol es gestionar los turnos del negocio por WhatsApp de forma rapida, clara y calida.\nAdapta el tono (formal/informal, regional/neutro) al estilo del negocio.\n\n---\n\n# INFORMACION DEL NEGOCIO (completar antes de desplegar)\n\n## Datos\n- Nombre: {{BUSINESS_NAME}}\n- Direccion: {{BUSINESS_ADDRESS}}\n- WhatsApp de contacto: {{BUSINESS_WHATSAPP}}\n\n## Horario de atencion\n{{HORARIO_ATENCION}} (ej: \"Lunes a viernes 09:00-18:00, sabados 09:00-13:00, domingo cerrado\")\n\nZona horaria: {{TIMEZONE}} (ej: America/Argentina/Cordoba)\n\n## Profesional(es)\n{{STAFF_NAME}} — {{STAFF_DESCRIPTION}} (agregar mas filas si hay varios profesionales y adaptar el prompt/herramientas para que el cliente elija)\n\n## Servicios\n{{TABLA_SERVICIOS}} (nombre, precio, duracion — cada servicio debe tener una duracion definida porque afecta el calculo de disponibilidad)\n\n### Regla sobre dias cerrados\nSi Ver_Disponibilidad_Calendar devuelve un campo motivo indicando que el negocio no atiende ese dia, avisar al cliente y ofrecer elegir otro dia sin insistir con esa fecha.\n\n---\n\n# HERRAMIENTAS DISPONIBLES\n\n## 1. Google Calendar\n\n### Ver_Disponibilidad_Calendar\nObtiene turnos libres de una fecha y servicio especifico (sub-workflow separado que calcula huecos segun horario de atencion menos eventos existentes). Parametros: fecha_consulta (YYYY-MM-DD) + servicio.\n\n### Crear_Turno_Calendar\nCrea el evento en Google Calendar re-verificando disponibilidad real en el momento de crear (sub-workflow separado, evita double booking). Guardar el campo \"id\" del resultado como Event_ID_Google. Si devuelve { ocupado: true }, el horario fue tomado por otro cliente justo antes: no confirmar, volver a consultar disponibilidad.\n\n### Actualizar_Turno_Calendar\nModifica fecha u hora de un turno existente. Requiere Event_ID_Google real.\n\n### Eliminar_Turno_Calendar\nCancela un turno. Requiere Event_ID_Google real.\n\n## 2. Google Sheets (base de datos de clientes y turnos)\n\n### Buscar_Cliente\nVerifica si el cliente ya esta registrado, busca por numero de telefono.\n\n### Registrar_Cliente\nDa de alta a un cliente nuevo. Campos requeridos: nombre, telefono confirmado.\n\n### Buscar_Turno\nEncuentra turnos y obtiene el Event_ID_Google. Busca por telefono confirmado. Si hay multiples, mostrarlos todos y pedir que elija.\n\n### Guardar_Turno\nRegistra el turno en Sheets. Se ejecuta DESPUES de Crear_Turno_Calendar. Requiere el Event_ID_Google real.\n\n### Actualizar_Estado_Turno\nCambia el estado del turno (Pendiente, Confirmado, Modificado, Cancelado).\n\n## 3. Escalar_a_Humano\nEscala la conversacion a un humano (sub-workflow que envia email/WhatsApp de alerta) cuando el agente no puede resolver algo o el cliente lo pide explicitamente.\n\n---\n\n# FLUJOS DE TRABAJO\n\n## Flujo 1: Reservar Turno\n1. Saludar y preguntar en que se puede ayudar\n2. Pedir servicio y fecha preferida en un solo mensaje\n3. Confirmar telefono segun Regla 11\n4. Ejecutar Buscar_Cliente con el telefono confirmado:\n   - Si existe → usar el nombre guardado en Sheets directamente, no registrar de nuevo\n   - Si no existe → usar el nombre de WhatsApp (pushName) y registrar directamente, sin pedirlo (salvo que sea invalido)\n5. Ejecutar sin interrumpir: Registrar_Cliente (si aplica) → Ver_Disponibilidad_Calendar → Crear_Turno_Calendar (si el horario esta disponible, si no ofrecer opciones) → Guardar_Turno\n6. Confirmar turno con todos los detalles en un solo mensaje final\n\n## Flujo 2: Modificar Turno\n1. Confirmar telefono segun Regla 11\n2. Buscar_Turno → obtener Event_ID_Google real; si hay mas de uno, mostrarlos y esperar eleccion\n3. Pedir nueva fecha y horario si no los menciono\n4. Ver_Disponibilidad_Calendar con nueva fecha y servicio → verificar que el horario pedido este disponible\n5. Actualizar_Turno_Calendar con Event_ID_Google real + nuevo horario → esperar respuesta exitosa\n6. Actualizar_Estado_Turno → \"Modificado\"\n7. Confirmar al cliente en un solo mensaje con todos los detalles. Si algun paso falla, no confirmar y avisar del problema.\n\n## Flujo 3: Cancelar Turno\n1. Confirmar telefono segun Regla 11\n2. Buscar_Turno → obtener Event_ID_Google; si hay mas de uno, mostrarlos y esperar eleccion\n3. Eliminar_Turno_Calendar + Actualizar_Estado_Turno → \"Cancelado\"\n4. Confirmar cancelacion y ofrecer reagendar\n\n## Flujo 4: Consultar Turno\n1. Confirmar telefono segun Regla 11\n2. Buscar_Turno → mostrar detalles en un solo mensaje\n\n---\n\n# REGLAS DE NEGOCIO (ajustar segun el negocio)\n\n- Antelacion minima: {{ANTELACION_MINIMA}}\n- Antelacion maxima: {{ANTELACION_MAXIMA}} (ej: 30 dias)\n- Horario valido: solo dentro del horario de atencion configurado\n- Dias validos: {{DIAS_VALIDOS}}\n\n## Datos del cliente actual\n- Telefono normalizado: {{ $('Preparar Datos').item.json.phoneNormalized }}\n- Nombre WhatsApp: {{ $('Preparar Datos').item.json.pushName }}\n\n---\n\n# ESTILO DE COMUNICACION (ajustar a la identidad de marca del negocio)\n\n- Definir tono: formal / informal, regional / neutro\n- Mensajes cortos, pensados para WhatsApp\n- 1-3 emojis por mensaje, usados con criterio\n- Evitar tecnicismos\n\n## Ejemplo de confirmacion de turno:\n¡Turno confirmado! ✅\n\n[Servicio]\nCon: {{STAFF_NAME}}\n[Dia] [fecha]\n[Hora]\n{{BUSINESS_NAME}}\n\n¡Te esperamos!\n\n---\n\n# INICIO DE CONVERSACION\n1. Saludar y presentarse brevemente\n2. Mencionar que se puede gestionar turnos\n3. Preguntar en que se puede ayudar\n4. Si el mensaje ya tiene intencion clara, avanzar directo al flujo sin preguntas innecesarias"
+        }
+      },
+      "id": "ea948ee9-6ca0-47ba-8ada-dba70ffb857f",
+      "name": "Recepcionista Virtual",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [720, 928],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "messages-api",
+        "instanceName": "={{ $('Preparar Datos').item.json.instanceName }}",
+        "remoteJid": "={{ $('Preparar Datos').item.json.phoneNormalized }}@s.whatsapp.net",
+        "messageText": "={{ $('Recepcionista Virtual').item.json.output }}",
+        "options_message": {}
+      },
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 1,
+      "position": [1600, 928],
+      "id": "8eddb96f-9e18-45f4-9f84-69a7d688c127",
+      "name": "Enviar texto",
+      "retryOnFail": false,
+      "waitBetweenTries": 2000,
+      "credentials": { "evolutionApi": { "name": "Evolution API account" } }
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.chatInput }}",
+        "guardrails": { "nsfw": { "value": { "threshold": 0.7 } } }
+      },
+      "type": "@n8n/n8n-nodes-langchain.guardrails",
+      "typeVersion": 2,
+      "position": [-176, 944],
+      "id": "dbb6cb79-818f-4ac4-9267-1d4fb12b65c7",
+      "name": "Guardrails1"
+    },
+    {
+      "parameters": {
+        "resource": "messages-api",
+        "instanceName": "={{ $('Preparar Datos').item.json.instanceName }}",
+        "remoteJid": "={{ $('Preparar Datos').item.json.phoneNormalized }}@s.whatsapp.net",
+        "messageText": "Lo siento, no puedo ayudarte con eso.",
+        "options_message": {}
+      },
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 1,
+      "position": [96, 1136],
+      "id": "b2f05ac1-2d98-4d06-9dd3-d9b5d1527673",
+      "name": "Enviar texto1",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": { "evolutionApi": { "name": "Evolution API account" } }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Preparar Datos').item.json.sessionId }}",
+        "contextWindowLength": 10
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [624, 1136],
+      "id": "fd8d4cc9-50cb-4831-9eff-cab024468bc3",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [448, 1136],
+      "id": "4ff92c7a-6496-46d4-ac55-96379b072501",
+      "name": "OpenRouter Chat Model",
+      "credentials": { "openRouterApi": { "name": "OpenRouter account" } }
+    },
+    {
+      "parameters": { "options": {} },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [-176, 1376],
+      "id": "9a4ef963-5eeb-4da3-b699-8b8454ea5c32",
+      "name": "OpenRouter Chat Model1",
+      "credentials": { "openRouterApi": { "name": "OpenRouter account" } }
+    },
+    {
+      "parameters": {
+        "description": "Consulta los turnos disponibles para una fecha y servicio especifico.\n\nPARAMETROS OBLIGATORIOS:\n- fecha_consulta: fecha en formato YYYY-MM-DD\n- servicio: uno de los servicios validos configurados\n\nNUNCA llamar esta herramienta sin los dos parametros.",
+        "workflowId": { "__rl": true, "value": "{{SUBWORKFLOW_ID_DISPONIBILIDAD}}", "mode": "id" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": { "peluquero": "={{ $fromAI('fecha_consulta', '', 'string').trim() }}|{{ $fromAI('servicio', '', 'string').trim() }}\n" },
+          "matchingColumns": ["peluquero"],
+          "schema": [{ "id": "peluquero", "displayName": "peluquero", "required": false, "defaultMatch": false, "display": true, "canBeUsedToMatch": true, "type": "string", "removed": false }],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [144, 1712],
+      "id": "58b2e7ca-061b-42cc-9eff-56b637b6c4cc",
+      "name": "Ver_Disponibilidad_Calendar"
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Elimina un turno existente en Google Calendar.\n\nUSO OBLIGATORIO: usar SOLO para cancelar un turno ya existente. Antes de usarla, SIEMPRE obtener el Event_ID_Google real con Buscar_Turno.\n\nPARAMETRO OBLIGATORIO: Event_ID (ID real del evento existente).\n\nREGLAS CRITICAS: nunca usar sin un Event_ID_Google real, nunca inventar ni adivinar el Event_ID, nunca eliminar un turno si todavia no esta claro cual es el correcto. Despues de eliminar el evento, actualizar el estado del turno en Sheets con Actualizar_Estado_Turno a \"Cancelado\".",
+        "operation": "delete",
+        "calendar": { "__rl": true, "value": "={{GOOGLE_CALENDAR_ID}}", "mode": "id" },
+        "eventId": "={{ $fromAI('Event_ID', 'ID real del evento en Google Calendar que se debe eliminar. Debe ser el Event_ID_Google real obtenido previamente con Buscar_Turno.', 'string') }}",
+        "options": {}
+      },
+      "id": "c330ac54-91c4-416e-ba5d-b4a808039a31",
+      "name": "Eliminar_Turno_Calendar",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [752, 1712],
+      "credentials": { "googleCalendarOAuth2Api": { "name": "Google Calendar account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Actualiza un turno existente en Google Calendar.\n\nUSO OBLIGATORIO: usar SOLO para modificar fecha u hora de un turno ya existente. Antes de usarla, SIEMPRE obtener el Event_ID_Google real con Buscar_Turno y verificar disponibilidad con Ver_Disponibilidad_Calendar.\n\nPARAMETROS OBLIGATORIOS: Event_ID, Start, End.\n\nREGLAS CRITICAS: nunca usar sin un Event_ID_Google real, nunca usar para cambiar de profesional, nunca borrar y recrear el turno para modificarlo, nunca mover a un dia/horario no habilitado. La duracion total debe seguir siendo la del servicio original.",
+        "operation": "update",
+        "calendar": { "__rl": true, "value": "={{GOOGLE_CALENDAR_ID}}", "mode": "id" },
+        "eventId": "={{ $fromAI('Event_ID', 'ID real del evento en Google Calendar que se debe actualizar. Debe ser el Event_ID_Google real obtenido previamente con Buscar_Turno.', 'string') }}",
+        "updateFields": {
+          "end": "={{ $fromAI('End', 'Nueva fecha y hora exacta de finalizacion del turno, coherente con la duracion real del servicio y dentro del horario de atencion.', 'string') }}",
+          "start": "={{ $fromAI('Start', 'Nueva fecha y hora exacta de inicio del turno. Debe coincidir con un horario real validado previamente por Ver_Disponibilidad_Calendar y respetar el horario de atencion.', 'string') }}"
+        }
+      },
+      "id": "9be0c83e-0fc1-4025-a9a7-28525682f7a5",
+      "name": "Actualizar_Turno_Calendar1",
+      "type": "n8n-nodes-base.googleCalendarTool",
+      "typeVersion": 1.3,
+      "position": [544, 1712],
+      "credentials": { "googleCalendarOAuth2Api": { "name": "Google Calendar account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Actualiza un turno existente en la hoja de Turnos usando el Event_ID_Google real.\n\nUSO OBLIGATORIO: usar SOLO para actualizar un turno ya existente en Sheets, despues de una accion real en Google Calendar. La fila correcta debe encontrarse SIEMPRE usando el Event_ID_Google real, nunca inventado.\n\nESTADOS VALIDOS: Confirmado, Modificado, Cancelado, Completado.",
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "={{GOOGLE_SHEET_ID}}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Turnos", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $fromAI('ID', 'ID interno de la fila del turno. Conservar el valor existente si no corresponde modificarlo.', 'string') }}",
+            "Event_ID_Google": "={{ $fromAI('Event_ID_Google__using_to_match_', 'Event_ID_Google real del turno que se debe actualizar.', 'string') }}",
+            "Cliente_Nombre": "={{ $fromAI('Cliente_Nombre', 'Nombre del cliente asociado al turno.', 'string') }}",
+            "Cliente_Telefono": "={{ $fromAI('Cliente_Telefono', 'Telefono del cliente en formato normalizado.', 'string') }}",
+            "Fecha_Cita": "={{ $fromAI('Fecha_Cita', 'Fecha del turno en formato DD/MM/YYYY.', 'string') }}",
+            "Hora_Cita": "={{ $fromAI('Hora_Cita', 'Hora del turno en formato HH:mm.', 'string') }}",
+            "Servicio": "={{ $fromAI('Servicio', 'Servicio asociado al turno.', 'string') }}",
+            "Profesional": "{{STAFF_NAME}}",
+            "Estado": "={{ $fromAI('Estado', 'Nuevo estado del turno: Confirmado, Modificado, Cancelado o Completado.', 'string') }}",
+            "Recordatorio_24h": "={{ $fromAI('Recordatorio_24h', 'Texto TRUE o FALSE, no booleano real.', 'string') }}",
+            "Notas": "={{ $fromAI('Notas', '', 'string') }}",
+            "Recordatorio_1h": "={{ $fromAI('Recordatorio_1h', 'Texto TRUE o FALSE, no booleano real.', 'string') }}",
+            "Fecha_creacion": "={{ $fromAI('Fecha_creacion', 'Fecha y hora de creacion original del turno.', 'string') }}"
+          },
+          "matchingColumns": ["Event_ID_Google"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "f6b4eb78-43de-4894-8342-db7320f98d42",
+      "name": "Actualizar_Estado_Turno",
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.5,
+      "position": [1680, 1712],
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Registra un cliente nuevo en la hoja de Clientes. Si el cliente ya existe (mismo Telefono), actualiza sus datos sin duplicar (idempotente).\n\nUSO OBLIGATORIO: usar SOLO si Buscar_Cliente no devolvio resultados. Llamar UNA SOLA VEZ por conversacion.",
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "value": "={{GOOGLE_SHEET_ID}}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Clientes", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "=CLI-{{ Date.now() }}",
+            "Nombre": "={{ $fromAI('Nombre', 'Nombre del cliente confirmado o el mejor nombre confiable disponible.', 'string') }}",
+            "Telefono": "={{ $fromAI('Telefono', 'Telefono del cliente normalizado. Usar SIEMPRE phoneNormalized del contexto.', 'string') }}",
+            "Email": "={{ $fromAI('Email', 'Email del cliente, opcional.', 'string') }}",
+            "Fecha_nacimiento": "={{ $fromAI('Fecha_nacimiento', 'Fecha de nacimiento DD/MM/YYYY, opcional.', 'string') }}",
+            "Notas": "={{ $fromAI('Notas', 'Notas adicionales, opcional.', 'string') }}",
+            "Fecha_registro": "={{ $fromAI('Fecha_registro', 'Fecha y hora actual del registro.', 'string') }}"
+          },
+          "matchingColumns": ["Telefono"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [1072, 1712],
+      "id": "807ec915-44ec-4cb6-a500-dea2b33cee8a",
+      "name": "Registrar_Cliente",
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Guarda un turno nuevo en la hoja de Turnos.\n\nUSO OBLIGATORIO: usar SOLO despues de crear exitosamente el evento en Google Calendar con Crear_Turno_Calendar. El campo Event_ID_Google debe ser el \"id\" real devuelto por Google Calendar. Idempotente por Event_ID_Google: si se llama dos veces con el mismo, no crea duplicados.",
+        "operation": "appendOrUpdate",
+        "documentId": { "__rl": true, "value": "={{GOOGLE_SHEET_ID}}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Turnos", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Cliente_Telefono": "={{ $fromAI('Cliente_Telefono', 'Telefono del cliente normalizado. Usar SIEMPRE phoneNormalized del contexto.', 'string') }}",
+            "ID": "=TURNO-{{ Date.now() }}",
+            "Event_ID_Google": "={{ $fromAI('Event_ID_Google', 'ID real del evento ya creado en Google Calendar (campo id devuelto por Crear_Turno_Calendar). Nunca inventar.', 'string') }}",
+            "Cliente_Nombre": "={{ $fromAI('Cliente_Nombre', 'Nombre del cliente asociado al turno.', 'string') }}",
+            "Fecha_Cita": "={{ $fromAI('Fecha_Cita', 'Fecha del turno en formato DD/MM/YYYY.', 'string') }}",
+            "Hora_Cita": "={{ $fromAI('Hora_Cita', 'Hora del turno en formato 24hs HH:mm.', 'string') }}",
+            "Servicio": "={{ $fromAI('Servicio', 'Servicio reservado, uno de los servicios validos configurados.', 'string') }}",
+            "Profesional": "{{STAFF_NAME}}",
+            "Estado": "={{ $fromAI('Estado', 'Estado inicial del turno, usar Confirmado para un turno recien creado.', 'string') }}",
+            "Notas": "={{ $fromAI('Notas', 'Notas adicionales, opcional.', 'string') }}",
+            "Recordatorio_1h": "=FALSE",
+            "Fecha_creacion": "={{ $now.toFormat('dd/MM/yyyy HH:mm') }}"
+          },
+          "matchingColumns": ["Event_ID_Google"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [1360, 1712],
+      "id": "14006415-3309-4459-a404-27d56dfeb295",
+      "name": "Guardar_Turno",
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Busca un cliente ya registrado por su numero de telefono.\n\nUSO OBLIGATORIO: usar ANTES de registrar un cliente nuevo. Si devuelve un resultado, el cliente ya esta registrado y NO debe llamarse a Registrar_Cliente.\n\nPARAMETRO OBLIGATORIO: telefono del cliente normalizado. Usar SIEMPRE phoneNormalized, nunca re-normalizar.",
+        "documentId": { "__rl": true, "value": "={{GOOGLE_SHEET_ID}}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Clientes", "mode": "name" },
+        "filtersUI": { "values": [{ "lookupColumn": "Telefono", "lookupValue": "={{ $fromAI('values0_Value', '', 'string') }}" }] },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [1216, 1712],
+      "id": "c2576b68-ce5e-4ef5-b804-46e61caafa0a",
+      "name": "Buscar_Cliente1",
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Busca turnos existentes de un cliente usando el telefono confirmado. Devuelve el Event_ID_Google necesario para modificar o cancelar. Ajustar la logica de normalizacion de telefono al codigo de pais del negocio.\n\nSi devuelve mas de un turno, mostrar las opciones al cliente y pedir que elija. Nunca asumir cual usar si hay mas de uno.",
+        "documentId": { "__rl": true, "value": "={{GOOGLE_SHEET_ID}}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Turnos", "mode": "name" },
+        "filtersUI": { "values": [{ "lookupColumn": "Cliente_Telefono", "lookupValue": "={{ $fromAI('values0_Value', 'Telefono del cliente normalizado. Usar SIEMPRE phoneNormalized del contexto.', 'string') }}" }] },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [1504, 1712],
+      "id": "0dc6e917-97dc-4634-ac32-3aa24665d996",
+      "name": "Buscar_Turno",
+      "credentials": { "googleSheetsOAuth2Api": { "name": "Google Sheets account" } }
+    },
+    {
+      "parameters": {
+        "resource": "messages-api",
+        "instanceName": "={{ $('Webhook Evolution API').item.json.body.instance }}",
+        "remoteJid": "={{ $('Webhook Evolution API').item.json.body.data.key.remoteJid }}",
+        "messageText": "Por ahora no puedo procesar audios. ¿Podes escribirme el mensaje? ✍️",
+        "options_message": {}
+      },
+      "id": "node-responder-audio",
+      "name": "Responder Audio",
+      "type": "n8n-nodes-evolution-api.evolutionApi",
+      "typeVersion": 1,
+      "position": [-640, 1264],
+      "credentials": { "evolutionApi": { "name": "Evolution API account" } }
+    },
+    {
+      "parameters": {
+        "name": "Escalar_a_Humano",
+        "description": "Escala la conversacion a un humano cuando no se puede resolver el problema (envia notificacion por email/WhatsApp de alerta). Usar cuando el cliente tiene un problema complejo, se enoja, o pide hablar con una persona.",
+        "workflowId": { "__rl": true, "value": "{{SUBWORKFLOW_ID_ESCALADO}}", "mode": "id" },
+        "fields": {
+          "values": [
+            { "name": "pushName", "stringValue": "={{ $('Preparar Datos').item.json.pushName }}" },
+            { "name": "phoneNormalized", "stringValue": "={{ $('Preparar Datos').item.json.phoneNormalized }}" },
+            { "name": "chatInput", "stringValue": "={{ $('Preparar Datos').item.json.chatInput }}" },
+            { "name": "motivo", "stringValue": "={{ $fromAI('motivo', 'Motivo por el que se escala la conversacion al humano') }}" }
+          ]
+        }
+      },
+      "id": "tool-escalar-humano",
+      "name": "TOOL - Escalar_a_Humano",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 1.2,
+      "position": [1840, 1712]
+    },
+    {
+      "parameters": {
+        "description": "Crea un turno en Google Calendar, verificando disponibilidad real en el momento exacto de la creacion (re-chequea el calendario antes de crear, evita double booking aunque la conversacion haya usado datos de disponibilidad de un mensaje anterior).\n\nPARAMETROS OBLIGATORIOS: fecha_consulta (YYYY-MM-DD), hora (HH:mm 24hs), servicio, nombre_cliente.\n\nRESULTADO: si el horario sigue libre, devuelve el evento creado con su campo \"id\" (Event_ID_Google real, usarlo en Guardar_Turno). Si el horario ya fue ocupado por otra reserva, devuelve { ocupado: true, error: \"...\" } — en ese caso NO confirmar el turno, volver a llamar a Ver_Disponibilidad_Calendar.",
+        "workflowId": { "__rl": true, "value": "{{SUBWORKFLOW_ID_CREAR_TURNO}}", "mode": "id" },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha_consulta": "={{ $fromAI('fecha_consulta', '', 'string').trim() }}",
+            "hora": "={{ $fromAI('hora', '', 'string').trim() }}",
+            "servicio": "={{ $fromAI('servicio', '', 'string').trim() }}",
+            "nombre_cliente": "={{ $fromAI('nombre_cliente', '', 'string').trim() }}"
+          },
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "6f5d4040-d253-4918-95ae-9c9d28a44664",
+      "name": "Crear_Turno_Calendar",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [352, 1712]
+    }
+  ],
+  "connections": {
+    "Webhook Evolution API": { "main": [[{ "node": "Solo Chats Privados", "type": "main", "index": 0 }]] },
+    "Solo Chats Privados": { "main": [[{ "node": "Tipo de Mensaje", "type": "main", "index": 0 }]] },
+    "Tipo de Mensaje": { "main": [[{ "node": "Preparar Datos", "type": "main", "index": 0 }], [{ "node": "Responder Audio", "type": "main", "index": 0 }]] },
+    "Recepcionista Virtual": { "main": [[{ "node": "Enviar texto", "type": "main", "index": 0 }]] },
+    "Guardrails1": { "main": [[{ "node": "Recepcionista Virtual", "type": "main", "index": 0 }], [{ "node": "Enviar texto1", "type": "main", "index": 0 }]] },
+    "Simple Memory": { "ai_memory": [[{ "node": "Recepcionista Virtual", "type": "ai_memory", "index": 0 }]] },
+    "OpenRouter Chat Model": { "ai_languageModel": [[{ "node": "Recepcionista Virtual", "type": "ai_languageModel", "index": 0 }]] },
+    "OpenRouter Chat Model1": { "ai_languageModel": [[{ "node": "Guardrails1", "type": "ai_languageModel", "index": 0 }]] },
+    "Ver_Disponibilidad_Calendar": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Eliminar_Turno_Calendar": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Actualizar_Turno_Calendar1": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Actualizar_Estado_Turno": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Registrar_Cliente": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Guardar_Turno": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Buscar_Cliente1": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Buscar_Turno": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "TOOL - Escalar_a_Humano": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] },
+    "Preparar Datos": { "main": [[{ "node": "Guardrails1", "type": "main", "index": 0 }]] },
+    "Crear_Turno_Calendar": { "ai_tool": [[{ "node": "Recepcionista Virtual", "type": "ai_tool", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "{{TIMEZONE}}",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {}
+}
